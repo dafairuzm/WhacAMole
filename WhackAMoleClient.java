@@ -25,7 +25,7 @@ public class WhackAMoleClient extends JFrame {
     
     public WhackAMoleClient() {
         initializeGUI();
-        // TODO: Connect to server (will be implemented by Bob)
+        // Christoper
     }
     
     private void initializeGUI() {
