@@ -203,7 +203,7 @@ public class WhackAMoleClient extends JFrame {
             }
         }, 1000, 1000);
     }
-    
+
     private void showMole(int x, int y) {
         if (!gameActive) return;
         

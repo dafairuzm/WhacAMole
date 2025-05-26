@@ -1,4 +1,3 @@
-
 // WhackAMoleServer.java
 import javax.swing.*;
 import java.awt.*;
@@ -108,12 +107,18 @@ public class WhackAMoleServer extends JFrame {
     }
     
     private void handleNewClient(Socket clientSocket) {
+        String playerName = null;
         try {
             BufferedReader in = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
             PrintWriter out = new PrintWriter(clientSocket.getOutputStream(), true);
             
             // Get player name
-            String playerName = in.readLine();
+            playerName = in.readLine();
+            
+            if (playerName == null) {
+                clientSocket.close();
+                return;
+            }
             
             if (clients.containsKey(playerName)) {
                 out.println("NAME_TAKEN");
@@ -136,7 +141,17 @@ public class WhackAMoleServer extends JFrame {
             }
             
         } catch (IOException e) {
-            logMessage("Client connection error: " + e.getMessage());
+            // Connection lost - client disconnected unexpectedly
+            if (playerName != null) {
+                logMessage("Client connection lost: " + playerName + " - " + e.getMessage());
+            } else {
+                logMessage("Client connection error before name received: " + e.getMessage());
+            }
+        } finally {
+            // Clean up disconnected client
+            if (playerName != null) {
+                cleanupClient(playerName);
+            }
         }
     }
     
@@ -158,13 +173,35 @@ public class WhackAMoleServer extends JFrame {
                 broadcastScores();
             }
         } else if (message.equals("DISCONNECT")) {
-            disconnectClient(playerName);
+            // Client is disconnecting gracefully
+            logMessage("Player disconnecting gracefully: " + playerName);
+            cleanupClient(playerName);
+        }
+    }
+    
+    private void cleanupClient(String playerName) {
+        ClientHandler client = clients.remove(playerName);
+        if (client != null) {
+            try {
+                client.close();
+            } catch (IOException e) {
+                // Ignore error when closing already broken connection
+            }
+        }
+        playerScores.remove(playerName);
+        logMessage("Player removed from server: " + playerName);
+        updatePlayersLabel();
+        
+        // If game is running and no players left, stop the game
+        if (gameRunning && clients.isEmpty()) {
+            logMessage("No players left, stopping game");
+            stopGame();
         }
     }
     
     private void startGame() {
-        if (clients.size() < 3) {
-            JOptionPane.showMessageDialog(this, "Need at least 3 players to start!");
+        if (clients.size() < 1) {
+            JOptionPane.showMessageDialog(this, "Need at least 1 player to start!");
             return;
         }
         
@@ -224,7 +261,18 @@ public class WhackAMoleServer extends JFrame {
     }
     
     private void broadcastMessage(String message) {
-        clients.values().forEach(client -> client.sendMessage(message));
+        // Create a copy of the clients map to avoid concurrent modification
+        Map<String, ClientHandler> clientsCopy = new HashMap<>(clients);
+        
+        for (Map.Entry<String, ClientHandler> entry : clientsCopy.entrySet()) {
+            try {
+                entry.getValue().sendMessage(message);
+            } catch (Exception e) {
+                // If sending fails, the client is probably disconnected
+                logMessage("Failed to send message to " + entry.getKey() + ", removing client");
+                cleanupClient(entry.getKey());
+            }
+        }
     }
     
     private void broadcastScores() {
@@ -233,20 +281,6 @@ public class WhackAMoleServer extends JFrame {
             scoreMsg.append(":").append(entry.getKey()).append(",").append(entry.getValue());
         }
         broadcastMessage(scoreMsg.toString());
-    }
-    
-    private void disconnectClient(String playerName) {
-        ClientHandler client = clients.remove(playerName);
-        if (client != null) {
-            try {
-                client.close();
-            } catch (IOException e) {
-                logMessage("Error closing client: " + e.getMessage());
-            }
-        }
-        playerScores.remove(playerName);
-        logMessage("Player disconnected: " + playerName);
-        updatePlayersLabel();
     }
     
     private void updatePlayersLabel() {
@@ -275,19 +309,26 @@ public class WhackAMoleServer extends JFrame {
             this.playerName = playerName;
         }
         
-        public void sendMessage(String message) {
+        public void sendMessage(String message) throws IOException {
+            if (socket.isClosed() || !socket.isConnected()) {
+                throw new IOException("Socket is closed or not connected");
+            }
             out.println(message);
+            if (out.checkError()) {
+                throw new IOException("Error writing to output stream");
+            }
         }
         
         public void close() throws IOException {
-            socket.close();
+            if (socket != null && !socket.isClosed()) {
+                socket.close();
+            }
         }
     }
     
     public static void main(String[] args) {
         SwingUtilities.invokeLater(() -> {
             try {
-                // FIXED: Changed from getSystemLookAndFeel() to getSystemLookAndFeelClassName()
                 UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
             } catch (Exception e) {
                 // Use default look and feel
