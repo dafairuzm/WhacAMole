@@ -1,262 +1,354 @@
-//package whack.a.mole.game.main;
+// package whack.a.mole.game.main;
 
+// WhackAMoleClient.java
+import javax.swing.*;
 import java.awt.*;
-import java.awt.event.WindowAdapter;
-import java.awt.event.WindowEvent;
+import java.awt.event.ActionEvent;
+import java.awt.event.ActionListener;
 import java.io.*;
 import java.net.*;
+import java.util.Map;
+import java.util.HashMap;
 import java.util.Timer;
 import java.util.TimerTask;
-import java.util.HashMap;
-import java.util.Map;
-
-import javax.swing.*;
 
 public class WhackAMoleClient extends JFrame {
     private static final String SERVER_HOST = "localhost";
     private static final int SERVER_PORT = 12345;
-
+    
+    private Socket socket;
+    private BufferedReader in;
+    private PrintWriter out;
+    private String playerName; //ada
+    
     // GUI Components
     private JButton[][] gameButtons;
     private JLabel statusLabel;
     private JLabel scoreLabel;
     private JLabel timeLabel;
     private JTextArea scoresArea;
-    private JPanel gamePanel;
-
-    private Timer gameTimer;
-    private Timer moleTimer;
-
-    // Game state variables
+    private JPanel gamePanel;//ada
+    
+    // Game state
     private int playerScore = 0;
     private int timeRemaining = 0;
     private boolean gameActive = false;
-    private String playerName;
-
-    private Socket socket;
-    private BufferedReader in;
-    private PrintWriter out;
-    private boolean connected = false;
-
+    private Timer gameTimer; //ada
+    private Timer moleTimer;
+    
     public WhackAMoleClient() {
         initializeGUI();
         connectToServer();
-    }
-
+    } //baru ditambahkan
+    
     private void initializeGUI() {
-        for (int i = 0; i < 3; i++) {
-            for (int j = 0; j < 3; j++) {
-                final int row = i;
-                final int col = j;
-                setTitle("Whack a Mole - Client");
-                setDefaultCloseOperation(JFrame.DO_NOTHING_ON_CLOSE);
-                setLayout(new BorderLayout());
-
-                gameButtons[i][j].addActionListener(e -> hitMole(row, col));
-            }
-        }
-
-        addWindowListener(new WindowAdapter() {
-            @Override
-            public void windowClosing(WindowEvent e) {
-                System.exit(0);
-            }
-        });
-
+        setTitle("Whack a Mole - Client");
+        setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+        setLayout(new BorderLayout()); //ada
+        
         // Top panel with status info
         JPanel topPanel = new JPanel(new GridLayout(3, 1));
-        statusLabel = new JLabel("Ready to connect...", JLabel.CENTER);
+        statusLabel = new JLabel("Connecting to server...", JLabel.CENTER);
         scoreLabel = new JLabel("Your Score: 0", JLabel.CENTER);
         timeLabel = new JLabel("Time: --", JLabel.CENTER);
-
+        
         statusLabel.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 14));
         scoreLabel.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 14));
         timeLabel.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 14));
-
+        
         topPanel.add(statusLabel);
         topPanel.add(scoreLabel);
         topPanel.add(timeLabel);
-
+        
         // Game panel (3x3 grid)
         gamePanel = new JPanel(new GridLayout(3, 3, 5, 5));
         gamePanel.setBorder(BorderFactory.createTitledBorder("Game Board"));
         gamePanel.setPreferredSize(new Dimension(400, 400));
-
+        
         gameButtons = new JButton[3][3];
         for (int i = 0; i < 3; i++) {
             for (int j = 0; j < 3; j++) {
+                final int row = i;
+                final int col = j; //baru ditambakan
+                
                 gameButtons[i][j] = new JButton();
                 gameButtons[i][j].setPreferredSize(new Dimension(120, 120));
                 gameButtons[i][j].setFont(new Font(Font.SANS_SERIF, Font.BOLD, 24));
                 gameButtons[i][j].setBackground(Color.GREEN);
                 gameButtons[i][j].setFocusPainted(false);
                 gameButtons[i][j].setEnabled(false);
-
+                
+                gameButtons[i][j].addActionListener(e -> hitMole(row, col));
+                
                 gamePanel.add(gameButtons[i][j]);
             }
         }
-
+        
         // Scores panel
         scoresArea = new JTextArea(8, 20);
         scoresArea.setEditable(false);
         scoresArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
         JScrollPane scoresScroll = new JScrollPane(scoresArea);
         scoresScroll.setBorder(BorderFactory.createTitledBorder("Player Scores"));
-
+        
         add(topPanel, BorderLayout.NORTH);
         add(gamePanel, BorderLayout.CENTER);
         add(scoresScroll, BorderLayout.EAST);
-
+        
         pack();
         setLocationRelativeTo(null);
         setResizable(false);
     }
-
+    
     private void connectToServer() {
-        String name = JOptionPane.showInputDialog(this, "Enter your name:", "Player Name",
-                JOptionPane.QUESTION_MESSAGE);
+        // Get player name
+        String name = JOptionPane.showInputDialog(this, "Enter your name:", "Player Name", JOptionPane.QUESTION_MESSAGE);
         if (name == null || name.trim().isEmpty()) {
             System.exit(0);
         }
         playerName = name.trim();
-
+        
         try {
             socket = new Socket(SERVER_HOST, SERVER_PORT);
             in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
             out = new PrintWriter(socket.getOutputStream(), true);
-
+            
+            // Send player name
             out.println(playerName);
-
+            
+            // Check connection response
             String response = in.readLine();
             if ("NAME_TAKEN".equals(response)) {
                 JOptionPane.showMessageDialog(this, "Name already taken!", "Error", JOptionPane.ERROR_MESSAGE);
                 System.exit(0);
             } else if ("CONNECTED".equals(response)) {
-                connected = true;
                 statusLabel.setText("Connected as: " + playerName);
                 setTitle("Whack a Mole - " + playerName);
-
+                
+                // Start listening for server messages
                 new Thread(this::listenToServer).start();
             }
-
+            
         } catch (IOException e) {
-            JOptionPane.showMessageDialog(this, "Failed to connect to server: " + e.getMessage(),
-                    "Connection Error", JOptionPane.ERROR_MESSAGE);
+            JOptionPane.showMessageDialog(this, "Failed to connect to server: " + e.getMessage(), 
+                                        "Connection Error", JOptionPane.ERROR_MESSAGE);
             System.exit(0);
         }
     }
-
+    
     private void listenToServer() {
-    try {
-        String message;
-        while (connected && (message = in.readLine()) != null) {
-            handleServerMessage(message);
-        }
-    } catch (IOException e) {
-        if (connected) {
+        try {
+            String message;
+            while ((message = in.readLine()) != null) {
+                handleServerMessage(message);
+            }
+        } catch (IOException e) {
             SwingUtilities.invokeLater(() -> {
                 statusLabel.setText("Disconnected from server");
                 JOptionPane.showMessageDialog(this, "Lost connection to server", "Connection Lost", JOptionPane.WARNING_MESSAGE);
             });
         }
     }
-}
-private void handleServerMessage(String message) {
-    SwingUtilities.invokeLater(() -> {
-        if (message.startsWith("GAME_START:")) {
-            int duration = Integer.parseInt(message.split(":")[1]);
-            startGame(duration);
-        } else if (message.startsWith("MOLE_SPAWN:")) {
-            String[] parts = message.split(":");
-            int x = Integer.parseInt(parts[1]);
-            int y = Integer.parseInt(parts[2]);
-            showMole(x, y);
-        } else if (message.startsWith("SCORES:")) {
-            //updateScores(message);
-        } else if (message.startsWith("GAME_END:")) {
-            String[] parts = message.split(":");
-            String winner = parts[1];
-            int winningScore = Integer.parseInt(parts[2]);
-            //endGame(winner, winningScore);
-        } else if (message.equals("GAME_STOPPED")) {
-            //stopGame();
-        }
-    });
-}
-
-private void startGame(int duration) {
-    gameActive = true;
-    timeRemaining = duration;
-    statusLabel.setText("Game in progress!");
-    timeLabel.setText("Time: " + timeRemaining);
     
-    for (int i = 0; i < 3; i++) {
-        for (int j = 0; j < 3; j++) {
-            gameButtons[i][j].setEnabled(true);
-            gameButtons[i][j].setText("");
-            gameButtons[i][j].setBackground(Color.GREEN);
+    private void handleServerMessage(String message) {
+        SwingUtilities.invokeLater(() -> {
+            if (message.startsWith("GAME_START:")) {
+                int duration = Integer.parseInt(message.split(":")[1]);
+                startGame(duration);
+            } else if (message.startsWith("MOLE_SPAWN:")) {
+                String[] parts = message.split(":");
+                int x = Integer.parseInt(parts[1]);
+                int y = Integer.parseInt(parts[2]);
+                showMole(x, y);
+            } else if (message.startsWith("SCORES:")) {
+                updateScores(message);
+            } else if (message.startsWith("GAME_END:")) {
+                String[] parts = message.split(":");
+                String winner = parts[1];
+                int winningScore = Integer.parseInt(parts[2]);
+                endGame(winner, winningScore);
+            } else if (message.equals("GAME_STOPPED")) {
+                stopGame();
+            }
+        });
+    }
+    
+    private void startGame(int duration) {
+        gameActive = true;
+        timeRemaining = duration;
+        statusLabel.setText("Game in progress!");
+        timeLabel.setText("Time: " + timeRemaining);
+        
+        // Enable all buttons
+        for (int i = 0; i < 3; i++) {
+            for (int j = 0; j < 3; j++) {
+                gameButtons[i][j].setEnabled(true);
+                gameButtons[i][j].setText("");
+                gameButtons[i][j].setBackground(Color.GREEN);
+            }
+        }
+        
+        // Start countdown timer
+        gameTimer = new Timer();
+        gameTimer.scheduleAtFixedRate(new TimerTask() {
+            @Override
+            public void run() {
+                SwingUtilities.invokeLater(() -> {
+                    timeRemaining--;
+                    timeLabel.setText("Time: " + timeRemaining);
+                    if (timeRemaining <= 0) {
+                        gameTimer.cancel();
+                    }
+                });
+            }
+        }, 1000, 1000);
+    }
+    
+    private void showMole(int x, int y) {
+        if (!gameActive) return;
+        
+        // Clear all moles first
+        for (int i = 0; i < 3; i++) {
+            for (int j = 0; j < 3; j++) {
+                gameButtons[i][j].setText("");
+                gameButtons[i][j].setBackground(Color.GREEN);
+            }
+        }
+        
+        // Show new mole
+        gameButtons[x][y].setText("🐹");
+        gameButtons[x][y].setBackground(Color.YELLOW);
+        
+        // Hide mole after 2 seconds
+        if (moleTimer != null) {
+            moleTimer.cancel();
+        }
+        moleTimer = new Timer();
+        moleTimer.schedule(new TimerTask() {
+            @Override
+            public void run() {
+                SwingUtilities.invokeLater(() -> {
+                    if (gameActive) {
+                        gameButtons[x][y].setText("");
+                        gameButtons[x][y].setBackground(Color.GREEN);
+                    }
+                });
+            }
+        }, 2000);
+    }
+    
+    private void hitMole(int x, int y) {
+        if (!gameActive) return;
+        
+        // Check if there's a mole at this position
+        if ("🐹".equals(gameButtons[x][y].getText())) {
+            // Hit successful
+            gameButtons[x][y].setText("💥");
+            gameButtons[x][y].setBackground(Color.RED);
+            
+            // Send hit to server
+            out.println("HIT:" + x + ":" + y + ":" + System.currentTimeMillis());
+            
+            // Reset button after short delay
+            Timer resetTimer = new Timer();
+            resetTimer.schedule(new TimerTask() {
+                @Override
+                public void run() {
+                    SwingUtilities.invokeLater(() -> {
+                        if (gameActive) {
+                            gameButtons[x][y].setText("");
+                            gameButtons[x][y].setBackground(Color.GREEN);
+                        }
+                    });
+                }
+            }, 500);
         }
     }
     
-    if (gameTimer != null) {
-        gameTimer.cancel();
-    }
-    gameTimer = new Timer();
-    gameTimer.scheduleAtFixedRate(new TimerTask() {
-        @Override
-        public void run() {
-            SwingUtilities.invokeLater(() -> {
-                timeRemaining--;
-                timeLabel.setText("Time: " + timeRemaining);
-                if (timeRemaining <= 0) {
-                    gameTimer.cancel();
+    private void updateScores(String message) {
+        // Parse scores message: SCORES:player1,score1:player2,score2:...
+        String[] parts = message.split(":");
+        StringBuilder scoresText = new StringBuilder("LEADERBOARD\n");
+        scoresText.append("=".repeat(20)).append("\n");
+        
+        Map<String, Integer> scores = new HashMap<>();
+        
+        for (int i = 1; i < parts.length; i++) {
+            String[] playerScoreParts = parts[i].split(",");
+            if (playerScoreParts.length == 2) {
+                String player = playerScoreParts[0];
+                int score = Integer.parseInt(playerScoreParts[1]);
+                scores.put(player, score);
+                
+                if (player.equals(playerName)) {
+                    playerScore = score; // FIXED: Changed from playerScore = score; to playerScore = score;
+                    scoreLabel.setText("Your Score: " + score);
+                }
+            }
+        }
+        
+        // Sort and display scores
+        scores.entrySet().stream()
+            .sorted(Map.Entry.<String, Integer>comparingByValue().reversed())
+            .forEach(entry -> {
+                String name = entry.getKey();
+                int score = entry.getValue();
+                if (name.equals(playerName)) {
+                    scoresText.append("► ").append(name).append(": ").append(score).append(" ◄\n");
+                } else {
+                    scoresText.append("  ").append(name).append(": ").append(score).append("\n");
                 }
             });
-        }
-    }, 1000, 1000);
-}
-
-private void showMole(int x, int y) {
-    if (!gameActive) return;
-    
-    for (int i = 0; i < 3; i++) {
-        for (int j = 0; j < 3; j++) {
-            gameButtons[i][j].setText("");
-            gameButtons[i][j].setBackground(Color.GREEN);
-        }
+        
+        scoresArea.setText(scoresText.toString());
     }
     
-    gameButtons[x][y].setText("🐹");
-    gameButtons[x][y].setBackground(Color.YELLOW);
-    
-    if (moleTimer != null) {
-        moleTimer.cancel();
-    }
-    moleTimer = new Timer();
-    moleTimer.schedule(new TimerTask() {
-        @Override
-        public void run() {
-            SwingUtilities.invokeLater(() -> {
-                if (gameActive) {
-                    gameButtons[x][y].setText("");
-                    gameButtons[x][y].setBackground(Color.GREEN);
-                }
-            });
+    private void endGame(String winner, int winningScore) {
+        gameActive = false;
+        if (gameTimer != null) gameTimer.cancel();
+        if (moleTimer != null) moleTimer.cancel();
+        
+        // Disable all buttons
+        for (int i = 0; i < 3; i++) {
+            for (int j = 0; j < 3; j++) {
+                gameButtons[i][j].setEnabled(false);
+                gameButtons[i][j].setText("");
+                gameButtons[i][j].setBackground(Color.LIGHT_GRAY);
+            }
         }
-    }, 2000);
-}
-
-private void hitMole(int x, int y) {
-    if (!gameActive) return;
-    
-    if (connected && out != null) {
-        out.println("HIT:" + x + ":" + y + ":" + System.currentTimeMillis());
+        
+        statusLabel.setText("Game Over!");
+        timeLabel.setText("Time: 0");
+        
+        String message = winner.equals(playerName) ? 
+            "🎉 Congratulations! You won with " + winningScore + " points!" :
+            "Game Over! Winner: " + winner + " (" + winningScore + " points)";
+            
+        JOptionPane.showMessageDialog(this, message, "Game Over", JOptionPane.INFORMATION_MESSAGE);
     }
-}
-
+    
+    private void stopGame() {
+        gameActive = false;
+        if (gameTimer != null) gameTimer.cancel();
+        if (moleTimer != null) moleTimer.cancel();
+        
+        // Disable all buttons
+        for (int i = 0; i < 3; i++) {
+            for (int j = 0; j < 3; j++) {
+                gameButtons[i][j].setEnabled(false);
+                gameButtons[i][j].setText("");
+                gameButtons[i][j].setBackground(Color.LIGHT_GRAY);
+            }
+        }
+        
+        statusLabel.setText("Game stopped by server");
+        timeLabel.setText("Time: --");
+    }
+    
     public static void main(String[] args) {
         SwingUtilities.invokeLater(() -> {
             try {
+                // FIXED: Changed from getSystemLookAndFeel() to getSystemLookAndFeelClassName()
                 UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
             } catch (Exception e) {
                 // Use default look and feel
@@ -264,5 +356,4 @@ private void hitMole(int x, int y) {
             new WhackAMoleClient().setVisible(true);
         });
     }
-
 }
