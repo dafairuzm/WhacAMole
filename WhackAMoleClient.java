@@ -1,16 +1,16 @@
 // package whack.a.mole.game.main;
 
 // WhackAMoleClient.java
-import javax.swing.*;
 import java.awt.*;
-import java.awt.event.ActionEvent;
-import java.awt.event.ActionListener;
+import java.awt.event.WindowAdapter;
+import java.awt.event.WindowEvent;
 import java.io.*;
 import java.net.*;
-import java.util.Map;
 import java.util.HashMap;
+import java.util.Map;
 import java.util.Timer;
 import java.util.TimerTask;
+import javax.swing.*;
 
 public class WhackAMoleClient extends JFrame {
     private static final String SERVER_HOST = "localhost";
@@ -19,7 +19,7 @@ public class WhackAMoleClient extends JFrame {
     private Socket socket;
     private BufferedReader in;
     private PrintWriter out;
-    private String playerName; //ada
+    private String playerName;
     
     // GUI Components
     private JButton[][] gameButtons;
@@ -27,24 +27,34 @@ public class WhackAMoleClient extends JFrame {
     private JLabel scoreLabel;
     private JLabel timeLabel;
     private JTextArea scoresArea;
-    private JPanel gamePanel;//ada
+    private JPanel gamePanel;
     
     // Game state
     private int playerScore = 0;
     private int timeRemaining = 0;
     private boolean gameActive = false;
-    private Timer gameTimer; //ada
+    private Timer gameTimer;
     private Timer moleTimer;
+    private boolean connected = false;
     
     public WhackAMoleClient() {
         initializeGUI();
         connectToServer();
-    } //baru ditambahkan
+    }
     
     private void initializeGUI() {
         setTitle("Whack a Mole - Client");
-        setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
-        setLayout(new BorderLayout()); //ada
+        setDefaultCloseOperation(JFrame.DO_NOTHING_ON_CLOSE);
+        setLayout(new BorderLayout());
+        
+        // Add window closing listener to properly disconnect
+        addWindowListener(new WindowAdapter() {
+            @Override
+            public void windowClosing(WindowEvent e) {
+                disconnect();
+                System.exit(0);
+            }
+        });
         
         // Top panel with status info
         JPanel topPanel = new JPanel(new GridLayout(3, 1));
@@ -69,7 +79,7 @@ public class WhackAMoleClient extends JFrame {
         for (int i = 0; i < 3; i++) {
             for (int j = 0; j < 3; j++) {
                 final int row = i;
-                final int col = j; //baru ditambakan
+                final int col = j;
                 
                 gameButtons[i][j] = new JButton();
                 gameButtons[i][j].setPreferredSize(new Dimension(120, 120));
@@ -122,6 +132,7 @@ public class WhackAMoleClient extends JFrame {
                 JOptionPane.showMessageDialog(this, "Name already taken!", "Error", JOptionPane.ERROR_MESSAGE);
                 System.exit(0);
             } else if ("CONNECTED".equals(response)) {
+                connected = true;
                 statusLabel.setText("Connected as: " + playerName);
                 setTitle("Whack a Mole - " + playerName);
                 
@@ -139,14 +150,16 @@ public class WhackAMoleClient extends JFrame {
     private void listenToServer() {
         try {
             String message;
-            while ((message = in.readLine()) != null) {
+            while (connected && (message = in.readLine()) != null) {
                 handleServerMessage(message);
             }
         } catch (IOException e) {
-            SwingUtilities.invokeLater(() -> {
-                statusLabel.setText("Disconnected from server");
-                JOptionPane.showMessageDialog(this, "Lost connection to server", "Connection Lost", JOptionPane.WARNING_MESSAGE);
-            });
+            if (connected) {
+                SwingUtilities.invokeLater(() -> {
+                    statusLabel.setText("Disconnected from server");
+                    JOptionPane.showMessageDialog(this, "Lost connection to server", "Connection Lost", JOptionPane.WARNING_MESSAGE);
+                });
+            }
         }
     }
     
@@ -189,6 +202,9 @@ public class WhackAMoleClient extends JFrame {
         }
         
         // Start countdown timer
+        if (gameTimer != null) {
+            gameTimer.cancel();
+        }
         gameTimer = new Timer();
         gameTimer.scheduleAtFixedRate(new TimerTask() {
             @Override
@@ -203,7 +219,7 @@ public class WhackAMoleClient extends JFrame {
             }
         }, 1000, 1000);
     }
-
+    
     private void showMole(int x, int y) {
         if (!gameActive) return;
         
@@ -240,14 +256,16 @@ public class WhackAMoleClient extends JFrame {
     private void hitMole(int x, int y) {
         if (!gameActive) return;
         
+        // Send hit to server regardless of whether there's a mole or not
+        if (connected && out != null) {
+            out.println("HIT:" + x + ":" + y + ":" + System.currentTimeMillis());
+        }
+        
         // Check if there's a mole at this position
         if ("🐹".equals(gameButtons[x][y].getText())) {
-            // Hit successful
+            // Hit successful - show explosion effect
             gameButtons[x][y].setText("💥");
             gameButtons[x][y].setBackground(Color.RED);
-            
-            // Send hit to server
-            out.println("HIT:" + x + ":" + y + ":" + System.currentTimeMillis());
             
             // Reset button after short delay
             Timer resetTimer = new Timer();
@@ -262,6 +280,24 @@ public class WhackAMoleClient extends JFrame {
                     });
                 }
             }, 500);
+        } else {
+            // Miss - show miss effect
+            gameButtons[x][y].setText("❌");
+            gameButtons[x][y].setBackground(Color.ORANGE);
+            
+            // Reset button after short delay
+            Timer resetTimer = new Timer();
+            resetTimer.schedule(new TimerTask() {
+                @Override
+                public void run() {
+                    SwingUtilities.invokeLater(() -> {
+                        if (gameActive) {
+                            gameButtons[x][y].setText("");
+                            gameButtons[x][y].setBackground(Color.GREEN);
+                        }
+                    });
+                }
+            }, 300);
         }
     }
     
@@ -281,7 +317,7 @@ public class WhackAMoleClient extends JFrame {
                 scores.put(player, score);
                 
                 if (player.equals(playerName)) {
-                    playerScore = score; // FIXED: Changed from playerScore = score; to playerScore = score;
+                    playerScore = score;
                     scoreLabel.setText("Your Score: " + score);
                 }
             }
@@ -345,10 +381,23 @@ public class WhackAMoleClient extends JFrame {
         timeLabel.setText("Time: --");
     }
     
+    private void disconnect() {
+        connected = false;
+        try {
+            if (out != null) {
+                out.println("DISCONNECT");
+            }
+            if (socket != null && !socket.isClosed()) {
+                socket.close();
+            }
+        } catch (IOException e) {
+            // Ignore errors during disconnect
+        }
+    }
+    
     public static void main(String[] args) {
         SwingUtilities.invokeLater(() -> {
             try {
-                // FIXED: Changed from getSystemLookAndFeel() to getSystemLookAndFeelClassName()
                 UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
             } catch (Exception e) {
                 // Use default look and feel

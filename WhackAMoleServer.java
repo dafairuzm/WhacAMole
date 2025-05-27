@@ -1,21 +1,28 @@
+/*
+ * Click nbfs://nbhost/SystemFileSystem/Templates/Licenses/license-default.txt to change this license
+ * Click nbfs://nbhost/SystemFileSystem/Templates/Classes/Main.java to edit this template
+ */
+/**
+ *
+ * @author ASUS
+ */
 // WhackAMoleServer.java
-import javax.swing.*;
 import java.awt.*;
-import java.awt.event.ActionEvent;
-import java.awt.event.ActionListener;
 import java.io.*;
 import java.net.*;
 import java.util.*;
-import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import javax.swing.*;
 
 public class WhackAMoleServer extends JFrame {
     private static final int PORT = 12345;
     private static final int GAME_DURATION = 60; // seconds
-    private static final int MOLE_APPEAR_INTERVAL = 2; // seconds
+    private static final int MIN_MOLE_INTERVAL = 1; // minimum seconds
+    private static final int MAX_MOLE_INTERVAL = 3; // maximum seconds
     
     private ServerSocket serverSocket;
     private Map<String, ClientHandler> clients;
@@ -24,6 +31,8 @@ public class WhackAMoleServer extends JFrame {
     private int currentMoleX, currentMoleY;
     private long moleAppearTime;
     private ScheduledExecutorService gameScheduler;
+    private ScheduledFuture<?> moleSpawnTask;
+    private Random random;
     
     // GUI Components
     private JTextArea logArea;
@@ -36,6 +45,7 @@ public class WhackAMoleServer extends JFrame {
         clients = new ConcurrentHashMap<>();
         playerScores = new ConcurrentHashMap<>();
         gameScheduler = Executors.newScheduledThreadPool(2);
+        random = new Random();
         
         initializeGUI();
         startServer();
@@ -115,11 +125,6 @@ public class WhackAMoleServer extends JFrame {
             // Get player name
             playerName = in.readLine();
             
-            if (playerName == null) {
-                clientSocket.close();
-                return;
-            }
-            
             if (clients.containsKey(playerName)) {
                 out.println("NAME_TAKEN");
                 clientSocket.close();
@@ -141,16 +146,11 @@ public class WhackAMoleServer extends JFrame {
             }
             
         } catch (IOException e) {
-            // Connection lost - client disconnected unexpectedly
-            if (playerName != null) {
-                logMessage("Client connection lost: " + playerName + " - " + e.getMessage());
-            } else {
-                logMessage("Client connection error before name received: " + e.getMessage());
-            }
+            logMessage("Client connection error for " + (playerName != null ? playerName : "unknown") + ": " + e.getMessage());
         } finally {
             // Clean up disconnected client
             if (playerName != null) {
-                cleanupClient(playerName);
+                disconnectClient(playerName);
             }
         }
     }
@@ -162,46 +162,34 @@ public class WhackAMoleServer extends JFrame {
             int y = Integer.parseInt(parts[2]);
             long hitTime = Long.parseLong(parts[3]);
             
-            // Check if hit is valid (within time window and correct position)
-            if (gameRunning && Math.abs(hitTime - moleAppearTime) < 3000 && 
-                x == currentMoleX && y == currentMoleY) {
-                
+            if (gameRunning) {
                 int currentScore = playerScores.get(playerName);
-                playerScores.put(playerName, currentScore + 10);
                 
-                logMessage(playerName + " scored! New score: " + (currentScore + 10));
+                // Check if hit is valid (within time window and correct position)
+                if (Math.abs(hitTime - moleAppearTime) < 3000 && 
+                    x == currentMoleX && y == currentMoleY) {
+                    
+                    // Correct hit - add 10 points
+                    playerScores.put(playerName, currentScore + 10);
+                    logMessage(playerName + " scored! New score: " + (currentScore + 10));
+                    
+                } else {
+                    // Wrong hit - subtract 5 points (but don't go below 0)
+                    int newScore = Math.max(0, currentScore - 5);
+                    playerScores.put(playerName, newScore);
+                    logMessage(playerName + " missed! Score reduced to: " + newScore);
+                }
+                
                 broadcastScores();
             }
         } else if (message.equals("DISCONNECT")) {
-            // Client is disconnecting gracefully
-            logMessage("Player disconnecting gracefully: " + playerName);
-            cleanupClient(playerName);
-        }
-    }
-    
-    private void cleanupClient(String playerName) {
-        ClientHandler client = clients.remove(playerName);
-        if (client != null) {
-            try {
-                client.close();
-            } catch (IOException e) {
-                // Ignore error when closing already broken connection
-            }
-        }
-        playerScores.remove(playerName);
-        logMessage("Player removed from server: " + playerName);
-        updatePlayersLabel();
-        
-        // If game is running and no players left, stop the game
-        if (gameRunning && clients.isEmpty()) {
-            logMessage("No players left, stopping game");
-            stopGame();
+            disconnectClient(playerName);
         }
     }
     
     private void startGame() {
         if (clients.size() < 1) {
-            JOptionPane.showMessageDialog(this, "Need at least 1 player to start!");
+            JOptionPane.showMessageDialog(this, "Need at least 1 players to start!");
             return;
         }
         
@@ -216,18 +204,30 @@ public class WhackAMoleServer extends JFrame {
         broadcastMessage("GAME_START:" + GAME_DURATION);
         broadcastScores();
         
-        // Schedule mole appearances
-        gameScheduler.scheduleAtFixedRate(this::spawnMole, 1, MOLE_APPEAR_INTERVAL, TimeUnit.SECONDS);
+        // Schedule first mole appearance with random delay
+        scheduleNextMole();
         
         // Schedule game end
         gameScheduler.schedule(this::endGame, GAME_DURATION, TimeUnit.SECONDS);
     }
     
+    private void scheduleNextMole() {
+        if (!gameRunning) return;
+        
+        // Generate random interval between MIN_MOLE_INTERVAL and MAX_MOLE_INTERVAL
+        int randomInterval = MIN_MOLE_INTERVAL + random.nextInt(MAX_MOLE_INTERVAL - MIN_MOLE_INTERVAL + 1);
+        
+        moleSpawnTask = gameScheduler.schedule(() -> {
+            spawnMole();
+            scheduleNextMole(); // Schedule next mole with new random interval
+        }, randomInterval, TimeUnit.SECONDS);
+    }
+    
     private void spawnMole() {
         if (!gameRunning) return;
         
-        currentMoleX = (int) (Math.random() * 3);
-        currentMoleY = (int) (Math.random() * 3);
+        currentMoleX = random.nextInt(3);
+        currentMoleY = random.nextInt(3);
         moleAppearTime = System.currentTimeMillis();
         
         broadcastMessage("MOLE_SPAWN:" + currentMoleX + ":" + currentMoleY);
@@ -238,6 +238,11 @@ public class WhackAMoleServer extends JFrame {
         gameRunning = false;
         startButton.setEnabled(true);
         stopButton.setEnabled(false);
+        
+        // Cancel mole spawn task if running
+        if (moleSpawnTask != null && !moleSpawnTask.isDone()) {
+            moleSpawnTask.cancel(false);
+        }
         
         // Find winner
         String winner = playerScores.entrySet().stream()
@@ -256,21 +261,26 @@ public class WhackAMoleServer extends JFrame {
         startButton.setEnabled(true);
         stopButton.setEnabled(false);
         
+        // Cancel mole spawn task if running
+        if (moleSpawnTask != null && !moleSpawnTask.isDone()) {
+            moleSpawnTask.cancel(false);
+        }
+        
         broadcastMessage("GAME_STOPPED");
         logMessage("Game stopped by server");
     }
     
     private void broadcastMessage(String message) {
-        // Create a copy of the clients map to avoid concurrent modification
+        // Create a copy of the clients to avoid concurrent modification
         Map<String, ClientHandler> clientsCopy = new HashMap<>(clients);
         
         for (Map.Entry<String, ClientHandler> entry : clientsCopy.entrySet()) {
             try {
                 entry.getValue().sendMessage(message);
             } catch (Exception e) {
-                // If sending fails, the client is probably disconnected
-                logMessage("Failed to send message to " + entry.getKey() + ", removing client");
-                cleanupClient(entry.getKey());
+                // If sending fails, disconnect the client
+                logMessage("Failed to send message to " + entry.getKey() + ", disconnecting...");
+                disconnectClient(entry.getKey());
             }
         }
     }
@@ -281,6 +291,26 @@ public class WhackAMoleServer extends JFrame {
             scoreMsg.append(":").append(entry.getKey()).append(",").append(entry.getValue());
         }
         broadcastMessage(scoreMsg.toString());
+    }
+    
+    private void disconnectClient(String playerName) {
+        ClientHandler client = clients.remove(playerName);
+        if (client != null) {
+            try {
+                client.close();
+            } catch (IOException e) {
+                logMessage("Error closing client connection: " + e.getMessage());
+            }
+        }
+        playerScores.remove(playerName);
+        logMessage("Player disconnected: " + playerName);
+        updatePlayersLabel();
+        
+        // If game is running and not enough players, stop the game
+        if (gameRunning && clients.size() < 1) {
+            logMessage("Not enough players to continue game, stopping...");
+            stopGame();
+        }
     }
     
     private void updatePlayersLabel() {
@@ -309,13 +339,13 @@ public class WhackAMoleServer extends JFrame {
             this.playerName = playerName;
         }
         
-        public void sendMessage(String message) throws IOException {
-            if (socket.isClosed() || !socket.isConnected()) {
-                throw new IOException("Socket is closed or not connected");
-            }
-            out.println(message);
-            if (out.checkError()) {
-                throw new IOException("Error writing to output stream");
+        public void sendMessage(String message) {
+            if (out != null && !socket.isClosed()) {
+                out.println(message);
+                // Check if the connection is still alive
+                if (out.checkError()) {
+                    throw new RuntimeException("Failed to send message to client");
+                }
             }
         }
         
