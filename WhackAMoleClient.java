@@ -13,7 +13,7 @@ import java.util.TimerTask;
 import javax.swing.*;
 
 public class WhackAMoleClient extends JFrame {
-    private static final String SERVER_HOST = "localhost";
+    private static final String SERVER_HOST = "192.168.2.253";
     private static final int SERVER_PORT = 12345;
     
     private Socket socket;
