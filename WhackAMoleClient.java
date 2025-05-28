@@ -13,7 +13,7 @@ import java.util.TimerTask;
 import javax.swing.*;
 
 public class WhackAMoleClient extends JFrame {
-    private static final String SERVER_HOST = "localhost";
+    private static final String SERVER_HOST = "192.168.100.22";
     private static final int SERVER_PORT = 12345;
     
     private Socket socket;
@@ -33,6 +33,8 @@ public class WhackAMoleClient extends JFrame {
     private int playerScore = 0;
     private int timeRemaining = 0;
     private boolean gameActive = false;
+    private boolean canPlay = true; // Whether this player can actively play
+    private boolean isExtraTime = false;
     private Timer gameTimer;
     private Timer moleTimer;
     private boolean connected = false;
@@ -167,6 +169,8 @@ public class WhackAMoleClient extends JFrame {
         SwingUtilities.invokeLater(() -> {
             if (message.startsWith("GAME_START:")) {
                 int duration = Integer.parseInt(message.split(":")[1]);
+                isExtraTime = false;
+                canPlay = true; // Everyone can play in normal game
                 startGame(duration);
             } else if (message.startsWith("MOLE_SPAWN:")) {
                 String[] parts = message.split(":");
@@ -182,6 +186,34 @@ public class WhackAMoleClient extends JFrame {
                 endGame(winner, winningScore);
             } else if (message.equals("GAME_STOPPED")) {
                 stopGame();
+            } else if (message.startsWith("EXTRA_TIME:")) {
+                String[] parts = message.split(":");
+                int extraTime = Integer.parseInt(parts[1]);
+                String activePlayersStr = parts[2];
+                String[] activePlayers = activePlayersStr.split(",");
+                
+                // Check if this player is in the active players list
+                canPlay = false;
+                for (String activePlayer : activePlayers) {
+                    if (activePlayer.equals(playerName)) {
+                        canPlay = true;
+                        break;
+                    }
+                }
+                
+                isExtraTime = true;
+                
+                if (canPlay) {
+                    JOptionPane.showMessageDialog(this, 
+                        "🔥 SERI! Anda masuk Extra Time!\nHanya pemain dengan skor tertinggi yang bisa bermain!", 
+                        "Extra Time", JOptionPane.INFORMATION_MESSAGE);
+                } else {
+                    JOptionPane.showMessageDialog(this, 
+                        "⏱ Extra Time dimulai!\nAnda hanya bisa menonton karena skor Anda tidak tertinggi.", 
+                        "Watching Mode", JOptionPane.INFORMATION_MESSAGE);
+                }
+                
+                startGame(extraTime);
             }
         });
     }
@@ -189,16 +221,50 @@ public class WhackAMoleClient extends JFrame {
     private void startGame(int duration) {
         gameActive = true;
         timeRemaining = duration;
-        statusLabel.setText("Game in progress!");
+        
+        if (isExtraTime) {
+            if (canPlay) {
+                statusLabel.setText("🔥 EXTRA TIME - Anda bisa bermain!");
+                statusLabel.setForeground(Color.RED);
+            } else {
+                statusLabel.setText("👀 EXTRA TIME - Mode Menonton");
+                statusLabel.setForeground(Color.BLUE);
+            }
+        } else {
+            statusLabel.setText("Game in progress!");
+            statusLabel.setForeground(Color.BLACK);
+        }
+        
         timeLabel.setText("Time: " + timeRemaining);
         
-        // Enable all buttons
+        // Enable/disable buttons based on whether player can play
         for (int i = 0; i < 3; i++) {
             for (int j = 0; j < 3; j++) {
-                gameButtons[i][j].setEnabled(true);
+                gameButtons[i][j].setEnabled(canPlay && gameActive);
                 gameButtons[i][j].setText("");
-                gameButtons[i][j].setBackground(Color.GREEN);
+                
+                if (canPlay) {
+                    gameButtons[i][j].setBackground(Color.GREEN);
+                } else {
+                    // Gray out buttons for spectators
+                    gameButtons[i][j].setBackground(Color.LIGHT_GRAY);
+                }
             }
+        }
+        
+        // Update game panel border to show status
+        if (isExtraTime) {
+            if (canPlay) {
+                gamePanel.setBorder(BorderFactory.createTitledBorder(
+                    BorderFactory.createLineBorder(Color.RED, 2), 
+                    "EXTRA TIME - Anda Bermain!"));
+            } else {
+                gamePanel.setBorder(BorderFactory.createTitledBorder(
+                    BorderFactory.createLineBorder(Color.BLUE, 2), 
+                    "EXTRA TIME - Mode Menonton"));
+            }
+        } else {
+            gamePanel.setBorder(BorderFactory.createTitledBorder("Game Board"));
         }
         
         // Start countdown timer
@@ -227,13 +293,22 @@ public class WhackAMoleClient extends JFrame {
         for (int i = 0; i < 3; i++) {
             for (int j = 0; j < 3; j++) {
                 gameButtons[i][j].setText("");
-                gameButtons[i][j].setBackground(Color.GREEN);
+                if (canPlay) {
+                    gameButtons[i][j].setBackground(Color.GREEN);
+                } else {
+                    gameButtons[i][j].setBackground(Color.LIGHT_GRAY);
+                }
             }
         }
         
         // Show new mole
         gameButtons[x][y].setText("🐹");
-        gameButtons[x][y].setBackground(Color.YELLOW);
+        if (canPlay) {
+            gameButtons[x][y].setBackground(Color.YELLOW);
+        } else {
+            // Show mole but with different color for spectators
+            gameButtons[x][y].setBackground(Color.ORANGE);
+        }
         
         // Hide mole after 2 seconds
         if (moleTimer != null) {
@@ -246,7 +321,11 @@ public class WhackAMoleClient extends JFrame {
                 SwingUtilities.invokeLater(() -> {
                     if (gameActive) {
                         gameButtons[x][y].setText("");
-                        gameButtons[x][y].setBackground(Color.GREEN);
+                        if (canPlay) {
+                            gameButtons[x][y].setBackground(Color.GREEN);
+                        } else {
+                            gameButtons[x][y].setBackground(Color.LIGHT_GRAY);
+                        }
                     }
                 });
             }
@@ -254,9 +333,18 @@ public class WhackAMoleClient extends JFrame {
     }
     
     private void hitMole(int x, int y) {
-        if (!gameActive) return;
+        // Don't allow hitting if player can't play
+        if (!gameActive || !canPlay) {
+            if (!canPlay && isExtraTime) {
+                // Show message to spectator
+                JOptionPane.showMessageDialog(this, 
+                    "Anda sedang dalam mode menonton!\nHanya pemain dengan skor tertinggi yang bisa bermain di Extra Time.", 
+                    "Mode Menonton", JOptionPane.INFORMATION_MESSAGE);
+            }
+            return;
+        }
         
-        // Send hit to server regardless of whether there's a mole or not
+        // Send hit to server
         if (connected && out != null) {
             out.println("HIT:" + x + ":" + y + ":" + System.currentTimeMillis());
         }
@@ -304,8 +392,15 @@ public class WhackAMoleClient extends JFrame {
     private void updateScores(String message) {
         // Parse scores message: SCORES:player1,score1:player2,score2:...
         String[] parts = message.split(":");
-        StringBuilder scoresText = new StringBuilder("LEADERBOARD\n");
-        scoresText.append("=".repeat(20)).append("\n");
+        StringBuilder scoresText = new StringBuilder();
+        
+        if (isExtraTime) {
+            scoresText.append("🔥 EXTRA TIME 🔥\n");
+            scoresText.append("=".repeat(20)).append("\n");
+        } else {
+            scoresText.append("LEADERBOARD\n");
+            scoresText.append("=".repeat(20)).append("\n");
+        }
         
         Map<String, Integer> scores = new HashMap<>();
         
@@ -329,10 +424,23 @@ public class WhackAMoleClient extends JFrame {
             .forEach(entry -> {
                 String name = entry.getKey();
                 int score = entry.getValue();
+                
                 if (name.equals(playerName)) {
-                    scoresText.append("► ").append(name).append(": ").append(score).append(" ◄\n");
+                    if (isExtraTime && canPlay) {
+                        scoresText.append("🔥 ").append(name).append(": ").append(score).append(" (ACTIVE) 🔥\n");
+                    } else if (isExtraTime && !canPlay) {
+                        scoresText.append("👀 ").append(name).append(": ").append(score).append(" (WATCHING) 👀\n");
+                    } else {
+                        scoresText.append("► ").append(name).append(": ").append(score).append(" ◄\n");
+                    }
                 } else {
-                    scoresText.append("  ").append(name).append(": ").append(score).append("\n");
+                    if (isExtraTime) {
+                        // Check if this player is active in extra time by checking if they have recent score updates
+                        // This is a simple heuristic - in a real implementation, you might want the server to send this info
+                        scoresText.append("  ").append(name).append(": ").append(score).append("\n");
+                    } else {
+                        scoresText.append("  ").append(name).append(": ").append(score).append("\n");
+                    }
                 }
             });
         
@@ -341,6 +449,9 @@ public class WhackAMoleClient extends JFrame {
     
     private void endGame(String winner, int winningScore) {
         gameActive = false;
+        isExtraTime = false;
+        canPlay = true;
+        
         if (gameTimer != null) gameTimer.cancel();
         if (moleTimer != null) moleTimer.cancel();
         
@@ -354,7 +465,9 @@ public class WhackAMoleClient extends JFrame {
         }
         
         statusLabel.setText("Game Over!");
+        statusLabel.setForeground(Color.BLACK);
         timeLabel.setText("Time: 0");
+        gamePanel.setBorder(BorderFactory.createTitledBorder("Game Board"));
         
         String message = winner.equals(playerName) ? 
             "🎉 Congratulations! You won with " + winningScore + " points!" :
@@ -365,6 +478,9 @@ public class WhackAMoleClient extends JFrame {
     
     private void stopGame() {
         gameActive = false;
+        isExtraTime = false;
+        canPlay = true;
+        
         if (gameTimer != null) gameTimer.cancel();
         if (moleTimer != null) moleTimer.cancel();
         
@@ -378,7 +494,9 @@ public class WhackAMoleClient extends JFrame {
         }
         
         statusLabel.setText("Game stopped by server");
+        statusLabel.setForeground(Color.BLACK);
         timeLabel.setText("Time: --");
+        gamePanel.setBorder(BorderFactory.createTitledBorder("Game Board"));
     }
     
     private void disconnect() {

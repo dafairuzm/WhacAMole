@@ -1,37 +1,31 @@
-/*
- * Click nbfs://nbhost/SystemFileSystem/Templates/Licenses/license-default.txt to change this license
- * Click nbfs://nbhost/SystemFileSystem/Templates/Classes/Main.java to edit this template
- */
-/**
- *
- * @author ASUS
- */
-// WhackAMoleServer.java
 import java.awt.*;
 import java.io.*;
 import java.net.*;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.TimeUnit;
+import java.util.List;
+import java.util.concurrent.*;
 import javax.swing.*;
 
 public class WhackAMoleServer extends JFrame {
     private static final int PORT = 12345;
-    private static final int GAME_DURATION = 60; // seconds
+    private static final int GAME_DURATION = 20; // seconds
+    private static final int EXTRA_TIME_DURATION = 15; // seconds
     private static final int MIN_MOLE_INTERVAL = 1; // minimum seconds
     private static final int MAX_MOLE_INTERVAL = 3; // maximum seconds
-    
+    private static final int MIN_MOLE_INTERVAL_EXTRA = 500; // minimum seconds extra time
+    private static final int MAX_MOLE_INTERVAL_EXTRA = 800; // maximum seconds extra time
+
     private ServerSocket serverSocket;
     private Map<String, ClientHandler> clients;
     private Map<String, Integer> playerScores;
+    private Set<String> activePlayersInExtraTime; // Players who can play in extra time
     private boolean gameRunning;
+    private boolean extraTimeActive;
     private int currentMoleX, currentMoleY;
     private long moleAppearTime;
     private ScheduledExecutorService gameScheduler;
     private ScheduledFuture<?> moleSpawnTask;
+    private ScheduledFuture<?> gameEndTask;
     private Random random;
     
     // GUI Components
@@ -44,7 +38,8 @@ public class WhackAMoleServer extends JFrame {
     public WhackAMoleServer() {
         clients = new ConcurrentHashMap<>();
         playerScores = new ConcurrentHashMap<>();
-        gameScheduler = Executors.newScheduledThreadPool(2);
+        activePlayersInExtraTime = new HashSet<>();
+        gameScheduler = Executors.newScheduledThreadPool(3);
         random = new Random();
         
         initializeGUI();
@@ -163,24 +158,29 @@ public class WhackAMoleServer extends JFrame {
             long hitTime = Long.parseLong(parts[3]);
             
             if (gameRunning) {
-                int currentScore = playerScores.get(playerName);
-                
-                // Check if hit is valid (within time window and correct position)
-                if (Math.abs(hitTime - moleAppearTime) < 3000 && 
-                    x == currentMoleX && y == currentMoleY) {
+                // Check if player can play (either normal game or in extra time)
+                if (!extraTimeActive || activePlayersInExtraTime.contains(playerName)) {
+                    int currentScore = playerScores.get(playerName);
                     
-                    // Correct hit - add 10 points
-                    playerScores.put(playerName, currentScore + 10);
-                    logMessage(playerName + " scored! New score: " + (currentScore + 10));
+                    // Check if hit is valid (within time window and correct position)
+                    if (Math.abs(hitTime - moleAppearTime) < 3000 && 
+                        x == currentMoleX && y == currentMoleY) {
+                        
+                        // Correct hit - add 10 points
+                        playerScores.put(playerName, currentScore + 10);
+                        logMessage(playerName + " scored! New score: " + (currentScore + 10));
+                        
+                    } else {
+                        // Wrong hit - subtract 5 points (but don't go below 0)
+                        int newScore = Math.max(0, currentScore - 5);
+                        playerScores.put(playerName, newScore);
+                        logMessage(playerName + " missed! Score reduced to: " + newScore);
+                    }
                     
+                    broadcastScores();
                 } else {
-                    // Wrong hit - subtract 5 points (but don't go below 0)
-                    int newScore = Math.max(0, currentScore - 5);
-                    playerScores.put(playerName, newScore);
-                    logMessage(playerName + " missed! Score reduced to: " + newScore);
+                    logMessage(playerName + " tried to hit but is not active in extra time");
                 }
-                
-                broadcastScores();
             }
         } else if (message.equals("DISCONNECT")) {
             disconnectClient(playerName);
@@ -189,11 +189,13 @@ public class WhackAMoleServer extends JFrame {
     
     private void startGame() {
         if (clients.size() < 1) {
-            JOptionPane.showMessageDialog(this, "Need at least 1 players to start!");
+            JOptionPane.showMessageDialog(this, "Need at least 1 player to start!");
             return;
         }
         
         gameRunning = true;
+        extraTimeActive = false;
+        activePlayersInExtraTime.clear();
         startButton.setEnabled(false);
         stopButton.setEnabled(true);
         
@@ -208,7 +210,7 @@ public class WhackAMoleServer extends JFrame {
         scheduleNextMole();
         
         // Schedule game end
-        gameScheduler.schedule(this::endGame, GAME_DURATION, TimeUnit.SECONDS);
+        gameEndTask = gameScheduler.schedule(this::endGame, GAME_DURATION, TimeUnit.SECONDS);
     }
     
     private void scheduleNextMole() {
@@ -221,6 +223,17 @@ public class WhackAMoleServer extends JFrame {
             spawnMole();
             scheduleNextMole(); // Schedule next mole with new random interval
         }, randomInterval, TimeUnit.SECONDS);
+    }
+    private void scheduleNextMoleExtraTime() {
+        if (!gameRunning) return;
+        
+        // Generate random interval between MIN_MOLE_INTERVAL and MAX_MOLE_INTERVAL
+        int randomInterval = MIN_MOLE_INTERVAL_EXTRA + random.nextInt(MAX_MOLE_INTERVAL_EXTRA - MIN_MOLE_INTERVAL_EXTRA + 1);
+        
+        moleSpawnTask = gameScheduler.schedule(() -> {
+            spawnMole();
+            scheduleNextMoleExtraTime(); // Schedule next mole with new random interval
+        }, randomInterval, TimeUnit.MILLISECONDS);
     }
     
     private void spawnMole() {
@@ -235,35 +248,110 @@ public class WhackAMoleServer extends JFrame {
     }
     
     private void endGame() {
-        gameRunning = false;
-        startButton.setEnabled(true);
-        stopButton.setEnabled(false);
-        
-        // Cancel mole spawn task if running
+        // Cancel any running tasks first
         if (moleSpawnTask != null && !moleSpawnTask.isDone()) {
             moleSpawnTask.cancel(false);
         }
         
-        // Find winner
-        String winner = playerScores.entrySet().stream()
-            .max(Map.Entry.comparingByValue())
-            .map(Map.Entry::getKey)
-            .orElse("No one");
+        List<Map.Entry<String, Integer>> sorted = new ArrayList<>(playerScores.entrySet());
+        sorted.sort((a, b) -> b.getValue() - a.getValue());
+
+        if (sorted.size() >= 2 && !extraTimeActive) {
+            int topScore = sorted.get(0).getValue();
+            int secondScore = sorted.get(1).getValue();
+
+            if (topScore == secondScore && topScore > 0) {
+                // Find all players with the top score
+                List<String> topPlayers = new ArrayList<>();
+                for (Map.Entry<String, Integer> entry : sorted) {
+                    if (entry.getValue() == topScore) {
+                        topPlayers.add(entry.getKey());
+                    } else {
+                        break;
+                    }
+                }
+                
+                if (topPlayers.size() >= 2) {
+                    startExtraTime(topPlayers);
+                    return;
+                }
+            }
+        }
+
+        // Normal game end
+        finishGame(sorted);
+    }
+    
+    private void startExtraTime(List<String> topPlayers) {
+        extraTimeActive = true;
+        activePlayersInExtraTime.clear();
+        activePlayersInExtraTime.addAll(topPlayers);
         
-        int winningScore = playerScores.getOrDefault(winner, 0);
+        // Reset scores only for active players
+        for (String player : activePlayersInExtraTime) {
+            playerScores.put(player, 0);
+        }
         
+        logMessage("Extra time started with players: " + String.join(", ", topPlayers));
+        
+        // Broadcast extra time start with active players list
+        String activePlayersStr = String.join(",", activePlayersInExtraTime);
+        broadcastMessage("EXTRA_TIME:" + EXTRA_TIME_DURATION + ":" + activePlayersStr);
+        broadcastScores();
+        
+        // Schedule moles for extra time
+        scheduleNextMoleExtraTime();
+        
+        // Schedule extra time end
+        gameEndTask = gameScheduler.schedule(this::endExtraTime, EXTRA_TIME_DURATION, TimeUnit.SECONDS);
+    }
+    
+    private void endExtraTime() {
+        extraTimeActive = false;
+        
+        // Cancel mole spawning
+        if (moleSpawnTask != null && !moleSpawnTask.isDone()) {
+            moleSpawnTask.cancel(false);
+        }
+        
+        // Get results from active players only
+        List<Map.Entry<String, Integer>> sorted = new ArrayList<>();
+        for (String activePlayer : activePlayersInExtraTime) {
+            sorted.add(new AbstractMap.SimpleEntry<>(activePlayer, playerScores.get(activePlayer)));
+        }
+        sorted.sort((a, b) -> b.getValue() - a.getValue());
+        
+        logMessage("Extra time ended");
+        finishGame(sorted);
+    }
+    
+    private void finishGame(List<Map.Entry<String, Integer>> sorted) {
+        gameRunning = false;
+        extraTimeActive = false;
+        activePlayersInExtraTime.clear();
+        startButton.setEnabled(true);
+        stopButton.setEnabled(false);
+        
+        String winner = sorted.isEmpty() ? "No one" : sorted.get(0).getKey();
+        int winningScore = sorted.isEmpty() ? 0 : sorted.get(0).getValue();
+
         logMessage("Game ended. Winner: " + winner + " with score: " + winningScore);
         broadcastMessage("GAME_END:" + winner + ":" + winningScore);
     }
     
     private void stopGame() {
         gameRunning = false;
+        extraTimeActive = false;
+        activePlayersInExtraTime.clear();
         startButton.setEnabled(true);
         stopButton.setEnabled(false);
         
-        // Cancel mole spawn task if running
+        // Cancel all running tasks
         if (moleSpawnTask != null && !moleSpawnTask.isDone()) {
             moleSpawnTask.cancel(false);
+        }
+        if (gameEndTask != null && !gameEndTask.isDone()) {
+            gameEndTask.cancel(false);
         }
         
         broadcastMessage("GAME_STOPPED");
@@ -303,6 +391,7 @@ public class WhackAMoleServer extends JFrame {
             }
         }
         playerScores.remove(playerName);
+        activePlayersInExtraTime.remove(playerName);
         logMessage("Player disconnected: " + playerName);
         updatePlayersLabel();
         
@@ -310,6 +399,12 @@ public class WhackAMoleServer extends JFrame {
         if (gameRunning && clients.size() < 1) {
             logMessage("Not enough players to continue game, stopping...");
             stopGame();
+        }
+        
+        // If in extra time and active player disconnects, check if we should end extra time
+        if (extraTimeActive && activePlayersInExtraTime.size() < 2) {
+            logMessage("Not enough active players in extra time, ending...");
+            endExtraTime();
         }
     }
     
